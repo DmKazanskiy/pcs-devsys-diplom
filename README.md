@@ -25,16 +25,16 @@ the comments in the Vagrantfile as well as documentation on
 > `Vagrantfile` - добавлены параметры `forwarded_port` и `virtualbox.memory`:
 ```bash
  # сервис VAULT по умолчанию использует порт 8200 (+GUI)
- config.vm.network "forwarded_port", guest: 8200, host: 58201
+ config.vm.network "forwarded_port", guest: 443, host: 8443
  # добавлена папка со скриптом для автоматического распечатывания VAULT
  config.vm.synced_folder "../unseals", "/vagrant_data"
-
 
  config.vm.provider "virtualbox" do |vb|
    vb.memory = "2048"
  end
 
 ```
+
 ```bash
 >:~/pcs-devsys-diplom/vagrant$ vagrant up
 >:~/pcs-devsys-diplom/vagrant$ vagrant ssh
@@ -115,223 +115,342 @@ To                         Action      From
 
 ```bash
 vagrant@vagrant:~$ curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
-
 vagrant@vagrant:~$ sudo apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
-
 vagrant@vagrant:~$ sudo apt-get update && sudo apt-get install vault jq
 
 
 ```
-
 ![](assets/3-vault-installed.jpg)
 
-> Разрешаем запуск службы `systemctl enable vault --now` ;
+> Добавим установку hashicorp vault при первом запуске и автозапуск `vault server` (в DEV режиме) в `Vargantfile` :
+```bash
+  config.vm.provision "shell", inline: <<-SHELL
+    curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
+    sudo apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main
+    sudo apt update 
+    sudo apt install - y screen vault
+    echo "VAULT_ADDR='http://127.0.0.1:8200'" >> /etc/environment
+    echo "VAULT_TOKEN='root'" >> /etc/environment
+    echo "" >> /var/log/vault.log
+  SHELL
+ 
+  config.vm.provision "shell", run: "always",  inline: <<-SHELL
+     screen -dmS scr001 bash -c 'vault server -dev -dev-root-token-id root'; exec bash
+  SHELL
 
+
+```
+
+**Проверка работы сервера `vault`:**
 ```bash
 lsof -i:8200
 
 COMMAND  PID  USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
 vault   6542 vault    8u  IPv4  55804      0t0  TCP *:8200 (LISTEN)
 
-ufw allow 8200 && ufw enable # на время установки разрешаем доступ извне к GUI VAULT
 ```
 > Скриншот GUI управления VAULT (с хоста):
 ![](assets/3-vault-host-temprory-port58201-8200.png)
 
 4. **Cоздайте центр сертификации по инструкции ([ссылка](https://learn.hashicorp.com/tutorials/vault/pki-engine?in=vault/secrets-management)) и выпустите сертификат для использования его в настройке веб-сервера nginx (срок жизни сертификата - месяц).**
 
-> Изменим настройки запуска VAULT: отключим `https` и включим `http` локально на том же порту:
-> `nano /etc/vault.d/vault.hcl`
-
-```bash
-
-# HTTP listener
-listener "tcp" {
-  address = "127.0.0.1:8200"
-  tls_disable = 1
-}
-
-# HTTPS listener
-#listener "tcp" {
-#  address       = "0.0.0.0:8200"
-#  tls_cert_file = "/opt/vault/tls/tls.crt"
-#  tls_key_file  = "/opt/vault/tls/tls.key"
-#}
-
-
-```
-
-> Устанавливаем системную переменную `VAULT_ADDR`  и добавляем ее в `/etc/environment`:
-
+> Устанавливаем системные переменные `VAULT_ADDR`, `VAULT_TOKEN`  и добавляем их в `/etc/environment`:
 
 ```bash
 sudo export VAULT_ADDR=http://127.0.0.1:8200 && sudo echo 'VAULT_ADDR=http://127.0.0.1:8200' >> /etc/environment
+sudo export VAULT_TOKEN=root && sudo echo 'VAULT_TOKEN=root' >> /etc/environment
 ```
 
-> Перезапускаем `VAULT` и проверяем статус:
+> Проверяем статус `vault`:
 ```bash
-sudo systemctl restart vault
 sudo vault status
 
-Key                Value
----                -----
-Seal Type          shamir
-Initialized        false
-Sealed             true
-Total Shares       0
-Threshold          0
-Unseal Progress    0/0
-Unseal Nonce       n/a
-Version            1.9.2
-Storage Type       file
-HA Enabled         false
+Key             Value
+---             -----
+Seal Type       shamir
+Initialized     true
+Sealed          false
+Total Shares    1
+Threshold       1
+Version         1.9.2
+Storage Type    inmem
+Cluster Name    vault-cluster-a0611716
+Cluster ID      c7b28335-a3de-2965-f91e-e6053bf05b4d
+HA Enabled      false
 
 ``` 
-> После установки сервер Vault находится в запечатанном (sealed) состоянии `Sealed = true` :
-> сервер не сможет расшифровывать секреты, которые будут храниться в базе.
-> Любые операции с хранилищем секретов приведут к ошибке.
 
-> Выполним инициализацию сервера `VAULT`:
+> Залогинимся на сервер с помощью команды `vault login`
 ```bash
-vault operator init
+vault login root
 
-Unseal Key 1: lJnqy8M4Yb48LkKGv3IVXlYcgr15AlrHke8NZGc/o6ms
-Unseal Key 2: +w4aNtjjaAvt0/zUXu2hT059czyGgbxnegQ3DzCoyNHq
-Unseal Key 3: MFHYjEWQU7thWn2xF5eytEGjI+GTxtfM79NIzy3hF8br 
-Unseal Key 4: EQv7NiBKR1H2ZkLjZBi/I6Yx5J+oKzDoE6E0SmVrrwn6
-Unseal Key 5: vmFuzD6F15KupD+Kn363AuR1aQyzR/wcXmNR/2g+XKeW
-
-Initial Root Token: s.ZWfxRLYkkVmnmIaxAJLGBBcW 
-
-Vault initialized with 5 key shares and a key threshold of 3. Please securely
-distribute the key shares printed above. When the Vault is re-sealed,
-restarted, or stopped, you must supply at least 3 of these keys to unseal it
-before it can start servicing requests.
-
-Vault does not store the generated master key. Without at least 3 keys to
-reconstruct the master key, Vault will remain permanently sealed!
-
-It is possible to generate new unseal keys, provided you have a quorum of
-existing unseal keys shares. See "vault operator rekey" for more information.
-
-```
-> Залогинимся на сервер с помощью команды `vault login` и укажем значение `Initial Root Token`
-```bash
 Key                  Value
 ---                  -----
-token                s.ZWfxRLYkkVmnmIaxAJLGBBcW
-token_accessor       MctQfy2yLajIapxWcOBKuSOm
+token                root
+token_accessor       oM5f3Fc6ro0VKCC6bycOKIun
 token_duration       ∞
 token_renewable      false
 token_policies       ["root"]
 identity_policies    []
 policies             ["root"]
 
+
 ```
-> Настроим скрипт "распечатывания", для этого в папке `/vagrant_data` создадим файл `touch security.sh && chmod +x security.sh`, со следующим содержимым:
-```bash
-#!/usr/bin/env bash
-
-UnsealKey1=lJnqy8M4Yb48LkKGv3IVXlYcgr15AlrHke8NZGc/o6ms
-UnsealKey2=+w4aNtjjaAvt0/zUXu2hT059czyGgbxnegQ3DzCoyNHq
-UnsealKey3=MFHYjEWQU7thWn2xF5eytEGjI+GTxtfM79NIzy3hF8br 
-UnsealKey4=EQv7NiBKR1H2ZkLjZBi/I6Yx5J+oKzDoE6E0SmVrrwn6
-UnsealKey5=vmFuzD6F15KupD+Kn363AuR1aQyzR/wcXmNR/2g+XKeW
-
-InitialRootToken=s.ZWfxRLYkkVmnmIaxAJLGBBcW
-
-sleep 10
-vault operator unseal $UnsealKey1
-vault operator unseal $UnsealKey2
-vault operator unseal $UnsealKey3
-```
-> Запустим скрипт и распечатаем сервер VAULT: `Sealed = false`
 
 > **Создаем корневой центр сертификации**, для этого последовательно выполняем следующий набор команд:
 
 ```bash
-# Включаем pki 
+# Активируем PKI тип секрета для корневого центра сертификации
 vault secrets enable pki
-# Включаем "Максимальное время жизни сертификата" - 10 лет для pki
-vault secrets tune -max-lease-ttl=87600h pki
-# Генерируем root сертификат и сохраняем его в CA_cert.crt 
+
+#Создаем корневой центр сертификации (CA) 10 лет и сохраняем корневой сертификат.
 vault write -field=certificate pki/root/generate/internal \
-    common_name="Netology Devops Root CA" \
-    ttl=87600h > CA_cert.crt
+     common_name="localnginx" \
+     alt_names="localnginx" \
+     ttl=87600h > CA_cert.crt
 
-```
-
-> Добавляем параметры "Адреса корневого центра сертификации":  
-```bash
+#Публикуем URL’ы для корневого центра сертификации
 vault write pki/config/urls \
-    issuing_certificates="$VAULT_ADDR/v1/pki/ca" \
-    crl_distribution_points="$VAULT_ADDR/v1/pki/crl"
+  issuing_certificates="$VAULT_ADDR/v1/pki/ca" \
+  crl_distribution_points="$VAULT_ADDR/v1/pki/crl"
 
 ```
+
 > **Создаем промежуточный центр сертификации**, для этого последовательно выполняем следующий набор команд:
 ```bash
-# Включаем pki 
+#Активируем PKI тип секрета для промежуточного центра сертификации
 vault secrets enable -path=pki_int pki
-# Включаем "Максимальное время жизни сертификата" - 5 лет для pki
 vault secrets tune -max-lease-ttl=43800h pki_int
-# Генерируем промежуточный сертификат и сохраняем его в pki_intermediate.csr
+#Генерируем запрос на выдачу сертификата для промежуточного центра сертификации
 vault write -format=json pki_int/intermediate/generate/internal \
-    common_name="Netology Devops Intermediate Auth" \
-    | jq -r '.data.csr' > pki_intermediate.csr
-# Подписываем промежуточный сертификат закрытым ключом корневого ЦС и сохраняем в intermediate.cert.pem
+     common_name="localnginx" \
+     alt_names="localnginx" \
+     | jq -r '.data.csr' > pki_intermediate.csr
+#Отправляем полученный CSR-файл в корневой центр сертификации, получаем сертификат для промежуточного центра сертификации (5лет)
 vault write -format=json pki/root/sign-intermediate csr=@pki_intermediate.csr \
      format=pem_bundle ttl="43800h" \
-     | jq -r '.data.certificate' > intermediate.cert.pem
-# После подписания промежуточного сертификата публикуем его в VAULT
-vault write pki_int/intermediate/set-signed certificate=@intermediate.cert.pem
+     | jq -r '.data.certificate' > $pki_intermediate.cert.pem
+
+#Публикуем подписанный сертификат промежуточного центра сертификации
+vault write pki_int/intermediate/set-signed certificate=@pki_intermediate.cert.pem
 
 ```
 
-> **Создаем роль для выдачи серверных сертификатов**, для этого последовательно выполняем следующий набор команд:
+> **Создаем роль для выдачи сертификатов**, для этого последовательно выполняем следующий набор команд:
+
 ```bash
-# Создаем роль `nginx-local-host`, которая разрешает выпуск серверного сертификата для `localhost` (срок жизни сертификата - месяц) 
-vault write pki_int/roles/nginx-local-host \
-     require_cn=false \
+#Создаем роль, с помощью которой будем выдавать сертификаты (макс 30 дней)
+vault write pki_int/roles/example-dot-com \
+     allow_bare_domains=true \
+     allow_glob_domains=true \
      allow_localhost=true \
-     server_flag=true \
-     client_flag=false \
-     ou="DEV" \
-     organization="Netology" \
+     allowed_domains="localhost" \
+     allow_subdomains=true \
      max_ttl="730h"
 
 ```
+
 > **Выпускаем сертификат для использования его в настройке веб-сервера nginx (срок жизни сертификата - месяц)**, для этого последовательно выполняем следующий набор команд:
+
 ```bash
-# Генерируем сертификат - срок жизни месяц (30 дней)
-vault write -format=json pki_int/issue/nginx-local-host \
-    ttl="720h" > vault.netology.ru.crt 
-# Сохраняем сертификат в формате public/private key
-cat vault.netology.ru.crt | jq -r .data.certificate > vault.netology.ru.crt.pem
-cat vault.netology.ru.crt | jq -r .data.issuing_ca >> vault.netology.ru.crt.pem
-cat vault.netology.ru.crt | jq -r .data.private_key > vault.netology.ru.crt.key
+#Создаем сертификат
+vault write -format=json pki_int/issue/example-dot-com common_name="localhost" alt_names="localhost" ttl="730h" > test.example.com.crt
+
+# Готовим для сервера NGINX Открытый(test.example.com.crt.pem) и Закрытый(test.example.com.crt.key) ключи
+cat test.example.com.crt | jq -r .data.certificate > test.example.com.crt.pem
+cat test.example.com.crt | jq -r .data.issuing_ca >> test.example.com.crt.pem
+cat test.example.com.crt | jq -r .data.private_key > test.example.com.crt.key
 
 ```
-> Артефакты скрипт распечатывания, корневой, промежуточные сертификаты центра сертификации, а также серверный сертификат и соотвествующие публичный и приватный ключи находятся в папке [vagrant_data](vagrant_data/).
+
+
+> **Артефакты**: итоговый `Vargantfile` (запуск и развертывание `VM`), скрипты создания сертификатов, а также корневой, промежуточные сертификаты центра сертификации, серверверный сертификат и соотвествующие публичный и приватный ключи находятся в папке [vagrant_data](vagrant_data/).
 
 5. **Установите корневой сертификат созданного центра сертификации в доверенные в хостовой системе.**
+
+```bash
+:/pcs-devsys-diplom/vagrant_data$ sudo cp CA_cert.crt /usr/local/share/ca-certificates
+:/usr/local/share/ca-certificates$ sudo update-ca-certificates 
+
+Updating certificates in /etc/ssl/certs...
+1 added, 0 removed; done.
+Running hooks in /etc/ca-certificates/update.d...
+
+Adding debian:CA_cert.pem
+
+```
+> В браузере хостовой системы `CA_cert.crt` добавлен в доверенные центры сертификации:
+> ![](assets/5-ca-cert-crt-browser-installed.png)
 
 
 6. **Установите nginx.**
 
+> Установка nginx выполнена с помощью команды `sudo apt install nginx`
+> Добавляем в скрипт запуска службы `nginx.service` параметры защиты от остановки сервиса (`request repeated too quickly`):
+
+```bash
+[Service]
+...
+Restart=always
+RestartSec=5
+
+
+```
+
+> Проверка работы службы выполнена с помощью команды `sudo systemctl status nginx`
+
+
+```bash
+● nginx.service - A high performance web server and a reverse proxy server
+     Loaded: loaded (/lib/systemd/system/nginx.service; enabled; vendor preset: enabled)
+     Active: active (running) since Fri 2022-01-07 21:01:37 MSK; 3min 36s ago
+       Docs: man:nginx(8)
+    Process: 2476 ExecStartPre=/usr/sbin/nginx -t -q -g daemon on; master_process on; (code=exited, status=0/SUCCESS)
+    Process: 2477 ExecStart=/usr/sbin/nginx -g daemon on; master_process on; (code=exited, status=0/SUCCESS)
+   Main PID: 2568 (nginx)
+      Tasks: 3 (limit: 2298)
+     Memory: 4.5M
+     CGroup: /system.slice/nginx.service
+             ├─2568 nginx: master process /usr/sbin/nginx -g daemon on; master_process on;
+             ├─2571 nginx: worker process
+             └─2572 nginx: worker process
+
+Jan 07 21:01:37 vagrant systemd[1]: Starting A high performance web server and a reverse proxy server...
+Jan 07 21:01:37 vagrant systemd[1]: Started A high performance web server and a reverse proxy server.
+
+```
+> В списке приложений, известных `ufw` появились профили `nginx`:
+> `Nginx Full`, `Nginx HTTP`, `Nginx HTTPS`, которые открывают порты 80 и 443, только 80 или только 443 соотвественно. Порт 443 уже открыт.
+>
 
 7. **По инструкции ([ссылка](https://nginx.org/en/docs/http/configuring_https_servers.html)) настройте nginx на https, используя ранее подготовленный сертификат:**
   - **можно использовать стандартную стартовую страницу nginx для демонстрации работы сервера;**
   - **можно использовать и другой html файл, сделанный вами;**
+> 
+> Скриншот браузера на хосте:
+> ![](assets/5-ca-cert-crt-browser-install02.png)
+```bash
+# Настроил nginx на использование подготовленного сертификата по протоколу https 
+server {
+        listen *:443 ssl;
+        server_name localhost;
+        ssl_certificate /vagrant_data/test.example.com.crt.pem;
+        ssl_certificate_key /vagrant_data/test.example.com.crt.key;
+        ssl_protocols  TLSv1 TLSv1.1 TLSv1.2;
+        ssl_ciphers HIGH:!aNULL:!eNULL:!EXPORT:!CAMELLIA:!DES:!MD5:!PSK:!RC4;
+        ssl_prefer_server_ciphers on;
+      }
 
+```
 
 8. **Откройте в браузере на хосте https адрес страницы, которую обслуживает сервер nginx.**
+>
+> Скриншот браузера на хосте:
+> ![](assets/5-ca-cert-crt-browser-install02.png)
+
 9. **Создайте скрипт, который будет генерировать новый сертификат в vault:**
   - **генерируем новый сертификат так, чтобы не переписывать конфиг nginx;**
-  - **перезапускаем nginx для применения нового сертификата.**
+
+> Скрипт для генерации нового сертификата `nginx` (`touch nginx_cert_create01.sh && chmod +x ./nginx_cert_create01.sh`)  
+```bash
+#!/usr/bin/env bash
+echo "$(date +%Y-%m-%d_%H:%M:%S%Z%z) [INFO] Запущен скрипт генерации сертификата" | sudo tee -a /var/log/vault.log
+
+# Указываем полный путь к сертификату и параметр Срок до окончания действия сертификата = 5 дней  (120часов или 432000сек)
+CERT_NAME="test.example.com.crt"
+DAYS="30"
+#Переходим в рабочий каталог `/vagrant_data`
+cd /vagrant_data 
+
+# Проверяем оставшийся срок жизни сертификата
+echo "Текущий статус сертификата ${CERT_NAME}.pem:"
+echo $(sudo openssl x509 -enddate -noout -in "/etc/nginx/conf.d/${CERT_NAME}.pem" -checkend $((DAYS*24*60*60)))
+echo "==========="
+echo "Останавливаем службу nginx"
+sudo systemctl stop nginx
+echo "Дата окончания действия сертификата ${CERT_NAME}.pem истекает - $(sudo openssl x509 -enddate -noout -in /etc/nginx/conf.d/${CERT_NAME}.pem)"
+echo "==========="
+echo "Создаем сертификат для nginx"
+vault write -format=json pki_int/issue/example-dot-com common_name="localhost" alt_names="localhost" ttl="1d" > $CERT_NAME
+
+# Готовим для сервера NGINX Открытый(test.example.com.crt.pem) и Закрытый(test.example.com.crt.key) ключи
+cat $CERT_NAME | jq -r .data.certificate > "$CERT_NAME.pem"
+cat $CERT_NAME | jq -r .data.issuing_ca >> "$CERT_NAME.pem"
+cat $CERT_NAME | jq -r .data.private_key > "$CERT_NAME.key"
+
+echo "Выпущен новый сертификат ${CERT_NAME}.pem  $(sudo openssl x509 -startdate -enddate -noout -in ${CERT_NAME}.pem)"
+sudo cp "./$CERT_NAME.pem" /etc/nginx/conf.d/"$CERT_NAME.pem"
+sudo cp "./$CERT_NAME.key" /etc/nginx/conf.d/"$CERT_NAME.key"
+if (($?==0))
+then
+  echo "Новый сертификат скопирован в папку сертификатов nginx. Дата окончания действия сертификата ${CERT_NAME}.pem истекает - $(sudo openssl x509 -enddate -noout -in /etc/nginx/conf.d/${CERT_NAME}.pem)"
+  echo "$(date +%Y-%m-%d_%H:%M:%S%Z%z) [INFO] Установлен новый сертификат ${CERT_NAME}.pem  $(sudo openssl x509 -serial -enddate -noout -in /etc/nginx/conf.d/${CERT_NAME}.pem)"  | tr '\n' ',' | sudo tee -a /var/log/vault.log
+  echo "" | sudo tee -a /var/log/vault.log
+
+else
+  echo "Ошибка копирования нового сертификата"
+  echo $(sudo openssl x509 -enddate -noout -in "${CERT_NAME}.pem" -checkend $((DAYS*24*60*60)))
+  echo "$(date +%Y-%m-%d_%H:%M:%S%Z%z) [ERROR] Ошибка копирования нового сертификата ${CERT_NAME}.pem" | sudo tee -a /var/log/vault.log
+fi
+echo "==========="
+
+sudo openssl x509 -enddate -noout -in "/etc/nginx/conf.d/${CERT_NAME}.pem"  -checkend "$((DAYS*24*60*60))" | grep "Certificate will expire"
+if(($?==0))
+then
+  echo "ВНИМАНИЕ Дата окончания действия сертификата ${CERT_NAME}.pem менее чем через ${DAYS} дней "
+  echo "$(date +%Y-%m-%d_%H:%M:%S%Z%z) [WARN] ВНИМАНИЕ Дата окончания действия сертификата ${CERT_NAME}.pem менее чем через ${DAYS} дней $(sudo openssl x509 -serial -enddate -noout -in /etc/nginx/conf.d/${CERT_NAME}.pem)"  | tr '\n' ',' | sudo tee -a /var/log/vault.log
+  echo "" | sudo tee -a /var/log/vault.log
+else
+  echo "Дата окончания действия сертификата ${CERT_NAME}.pem более чем через ${DAYS} дней "
+fi
+# Перезапускаем сервера `nginx`
+echo "Перезапускаем службу nginx"
+sudo systemctl restart nginx
+
+```
 
 
 10. **Поместите скрипт в crontab, чтобы сертификат обновлялся какого-то числа каждого месяца в удобное для вас время.**
 
+> Открыть расписание пользователя root: `sudo crontab -e`
+> Добавить строку `40 2 1/5 * * /vagrant_data/nginx_cert_create01.sh` (Запускать скрипт обновления сертификата каждые пять дней с 1-го по 31-е число каждый месяц в 2:40)
+> Сохранить изменения и закрыть редактор
+> Для проверки работы планировщика установил следующее правило - `*/3 * * * * bash /vagrant_data/nginx_cert_create01.sh` (запуск скрипта генерации сертификата каждые 3 минуты)
+```bash
+# Планировщик запускает скрипт каждые 3 минуты
+root@vagrant:/var/log# grep nginx_cert_create /var/log/syslog
+Jan 11 17:54:01 vagrant CRON[2800]: (root) CMD (bash /vagrant_data/nginx_cert_create01.sh)
+Jan 11 17:57:01 vagrant CRON[1712]: (root) CMD (bash /vagrant_data/nginx_cert_create01.sh)
+Jan 11 18:00:01 vagrant CRON[1774]: (root) CMD (bash /vagrant_data/nginx_cert_create01.sh)
+Jan 11 18:03:01 vagrant CRON[1836]: (root) CMD (bash /vagrant_data/nginx_cert_create01.sh)
+Jan 11 18:06:01 vagrant CRON[1895]: (root) CMD (bash /vagrant_data/nginx_cert_create01.sh)
+
+```
+```bash
+# Результат выполнения скрипта фиксируется в лог-файле каждые 3 минуты
+root@vagrant:/var/log# cat /var/log/vault.log
+
+2022-01-11_17:54:02MSK+0300 [INFO] Запущен скрипт генерации сертификата
+2022-01-11_17:54:02MSK+0300 [INFO] Установлен новый сертификат test.example.com.crt.pem  serial=8EF132C6FF50DE0DE42E96107710EC9FD1CA05,notAfter=Jan 12 14:54:02 2022 GMT,
+2022-01-11_17:54:02MSK+0300 [WARN] ВНИМАНИЕ Дата окончания действия сертификата test.example.com.crt.pem менее чем через 30 дней serial=8EF132C6FF50DE0DE42E96107710EC9FD1CA05,notAfter=Jan 12 14:54:02 2022 GMT
+2022-01-11_17:57:02MSK+0300 [INFO] Запущен скрипт генерации сертификата
+2022-01-11_17:57:02MSK+0300 [INFO] Установлен новый сертификат test.example.com.crt.pem  serial=2293414CF57013A50ECA90196970A8AFF11E7899,notAfter=Jan 12 14:57:02 2022 GMT,
+2022-01-11_17:57:02MSK+0300 [WARN] ВНИМАНИЕ Дата окончания действия сертификата test.example.com.crt.pem менее чем через 30 дней serial=2293414CF57013A50ECA90196970A8AFF11E7899,notAfter=Jan 12 14:57:02 2022 GMT,
+2022-01-11_18:00:02MSK+0300 [INFO] Запущен скрипт генерации сертификата
+2022-01-11_18:00:02MSK+0300 [INFO] Установлен новый сертификат test.example.com.crt.pem  serial=5F86116A82C228204E55DBBC570A5F2F6AFCB0FA,notAfter=Jan 12 15:00:01 2022 GMT,
+2022-01-11_18:00:02MSK+0300 [WARN] ВНИМАНИЕ Дата окончания действия сертификата test.example.com.crt.pem менее чем через 30 дней serial=5F86116A82C228204E55DBBC570A5F2F6AFCB0FA,notAfter=Jan 12 15:00:01 2022 GMT,
+2022-01-11_18:03:01MSK+0300 [INFO] Запущен скрипт генерации сертификата
+2022-01-11_18:03:01MSK+0300 [INFO] Установлен новый сертификат test.example.com.crt.pem  serial=163FA43BB38F88BA76FFA9BED2A72BB01F950AE0,notAfter=Jan 12 15:03:01 2022 GMT,
+2022-01-11_18:03:01MSK+0300 [WARN] ВНИМАНИЕ Дата окончания действия сертификата test.example.com.crt.pem менее чем через 30 дней serial=163FA43BB38F88BA76FFA9BED2A72BB01F950AE0,notAfter=Jan 12 15:03:01 2022 GMT,
+2022-01-11_18:06:01MSK+0300 [INFO] Запущен скрипт генерации сертификата
+2022-01-11_18:06:01MSK+0300 [INFO] Установлен новый сертификат test.example.com.crt.pem  serial=4E8C0991BF45033DB05F8E93957AE1C504B88422,notAfter=Jan 12 15:06:01 2022 GMT,
+2022-01-11_18:06:01MSK+0300 [WARN] ВНИМАНИЕ Дата окончания действия сертификата test.example.com.crt.pem менее чем через 30 дней serial=4E8C0991BF45033DB05F8E93957AE1C504B88422,notAfter=Jan 12 15:06:01 2022 GMT,
+
+
+
+```
+
+===
 
 ## Результат
 
